@@ -1,0 +1,8 @@
+gymnasium
+numpy
+qiskit
+cirq
+matplotlib
+torch
+stable-baselines3
+optuna
