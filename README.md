@@ -177,6 +177,6 @@ If you use QuantumForge in your research, please cite:
 @software{quantumforge2024,
   title = {QuantumForge: Advanced Quantum Circuit Design and Optimization Framework},
   year = {2024},
-  author = {QuantumForge Contributors},
-  url = {https://github.com/yourusername/QuantumForge}
+  author = {Moudather Chelbi},
+  url = {https://github.com/vinerya/QuantumForge}
 }
