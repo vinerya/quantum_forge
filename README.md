@@ -1,182 +1,152 @@
-# QuantumForge: Advanced Quantum Circuit Design and Optimization Framework
+# QuantumForge
 
-QuantumForge is a comprehensive quantum circuit design and optimization framework that combines reinforcement learning, circuit cutting, error mitigation, and dynamic compilation to create optimal quantum circuits.
+A [Gymnasium](https://gymnasium.farama.org/) environment for learning
+hardware-aware quantum circuit synthesis.
 
-## Features
+An agent builds a circuit one gate at a time. Each step it picks an operation,
+the qubits to act on and rotation angles. The reward is the fidelity between the
+circuit's output state and a target state, minus a small weighted cost for gate
+count, depth, two-qubit gates, hardware violations and estimated execution
+time. Two simulation backends are supported, Qiskit and Cirq, with identical
+semantics.
 
-### Core Circuit Design
-- Support for both Qiskit and Cirq backends
-- Gymnasium-compatible environment
-- Advanced action space including multi-qubit gates
-- Realistic noise simulation
-- Reinforcement learning integration with Stable Baselines3
-- Hyperparameter optimization using Optuna
-- Circuit optimization and visualization
-
-### Circuit Optimization
-- Template-based optimization
-- Quantum Shannon Decomposition
-- Gate commutation analysis
-- Multi-objective optimization
-- Hardware-aware optimization
-- Resource estimation
-- Circuit equivalence verification
-
-### Circuit Cutting
-- Intelligent cut-point selection
-- Dependency graph analysis
-- Balanced subcircuit generation
-- Entanglement cost minimization
-- Automated qubit remapping
-- Result reconstruction
-- Cutting visualization
-
-### Error Mitigation
-- Zero-noise extrapolation
-- Probabilistic error cancellation
-- Measurement error mitigation
-- Noise characterization
-- Confidence interval calculation
-- Error analysis visualization
-- Fidelity improvement tracking
-
-### Dynamic Compilation
-- Runtime optimization with caching
-- Pulse-level optimization
-- Hardware-specific compilation
-- Automated gate decomposition
-- Timing constraint optimization
-- Qubit mapping optimization
-- Compilation analysis tools
-
-## Installation
-
-1. Clone this repository
-2. Install the required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Usage
-
-### Basic Example
-See `example.py` for basic usage demonstrating:
-- Training a PPO agent on the QuantumForge environment
-- Evaluating the trained agent
-- Visualizing rewards and quantum states
+## Install
 
 ```bash
-python example.py
+pip install -e .                 # core: gymnasium, numpy, qiskit, networkx
+pip install -e ".[aer]"          # + noisy simulation via qiskit-aer
+pip install -e ".[cirq]"         # + cirq backend
+pip install -e ".[rl,viz]"       # + stable-baselines3, torch, optuna, matplotlib
+pip install -e ".[dev]"          # everything needed to run the tests
 ```
 
-### Advanced Examples
+## Quick start
 
-#### Hardware-Aware Optimization
-See `hardware_aware_example.py` for:
-- Hardware constraint integration
-- Noise-aware optimization
-- Connectivity optimization
+```python
+import gymnasium as gym
+import numpy as np
+import quantum_forge  # registers QuantumForge-v0
+
+env = gym.make("QuantumForge-v0", num_qubits=3, target="ghz", render_mode="human")
+obs, info = env.reset(seed=0)
+
+# action = (operation, qubit1, qubit2, param1, param2); see quantum_forge.OPERATIONS
+for action in ([2, 0, 0, 0, 0],   # H on qubit 0
+               [4, 0, 1, 0, 0],   # CX 0 -> 1
+               [4, 1, 2, 0, 0]):  # CX 1 -> 2
+    obs, reward, terminated, truncated, info = env.step(np.array(action, dtype=np.float32))
+
+env.render()
+print(info["fidelity"], terminated)   # 1.0 True
+```
+
+Run a smoke test with a random agent (core install only):
 
 ```bash
-python hardware_aware_example.py
+python examples/random_agent.py
 ```
 
-#### Circuit Cutting
-See `circuit_cutting_example.py` for:
-- Large circuit decomposition
-- Subcircuit execution
-- Result reconstruction
+Train a PPO agent to prepare GHZ states (`rl` extra):
 
 ```bash
-python circuit_cutting_example.py
+python examples/train_ppo.py --backend qiskit --timesteps 20000
 ```
 
-#### Error Mitigation
-See `advanced_examples.py` for:
-- Error mitigation techniques
-- Dynamic compilation
-- Advanced optimization strategies
+## Environment
+
+| | |
+|---|---|
+| **Action** | `Box(5)`: `(operation, qubit1, qubit2, param1, param2)`. Continuous values are rounded and clipped, so any continuous-control agent works. |
+| **Operations** | `x z h ry cx cz rxx rzz cp u` (indices 0 to 9). Indices 4 to 8 are two-qubit gates. |
+| **Observation** | Real and imaginary parts of the current statevector, plus one busy flag per qubit for the latest circuit layer when hardware constraints are set. |
+| **Reward** | `fidelity - cost_scale * (w_gates * gates + w_depth * depth + w_2q * two_qubit_gates + w_viol * violations + w_time * exec_time)` |
+| **Termination** | Fidelity reaches `success_threshold` (default 0.99), or the agent exceeds `max_violations` rejected hardware-violating actions. |
+| **Truncation** | `max_steps` (default 30). |
+
+### Constructor options
+
+```python
+QuantumForgeEnv(
+    num_qubits=3,
+    backend="qiskit",             # or "cirq"
+    noise_level=0.0,              # per-gate depolarising probability; >0 needs qiskit-aer for qiskit
+    hardware_constraints=None,    # HardwareConstraints(...)
+    target="random",              # "random" (Haar, reseeded each reset), "ghz", or a statevector
+    max_steps=30,
+    success_threshold=0.99,
+    max_violations=5,
+    cost_weights=None,            # override any of the default weights
+    cost_scale=0.01,
+    render_mode=None,             # "human" prints the circuit, "rgb_array" returns a probability bar chart
+)
+```
+
+### Hardware constraints
+
+```python
+from quantum_forge import HardwareConstraints
+
+hc = HardwareConstraints(
+    connectivity_map={0: [1], 1: [0, 2], 2: [1]},   # treated as undirected
+    gate_times={"h": 50, "cx": 300},                # any units; summed into execution_time
+    error_rates={(0, 1): 0.01, (1, 2): 0.015},
+    max_parallel_gates=2,                           # caps gates per layer, which raises depth
+)
+env = QuantumForgeEnv(num_qubits=3, hardware_constraints=hc)
+```
+
+Two-qubit gates on non-adjacent qubits are rejected: the gate is not applied,
+the reward is -1 and the violation count increases. Depth is computed with an
+as-soon-as-possible layering that respects `max_parallel_gates`.
+
+The underlying circuit is always available as `env.unwrapped.circuit`, a
+`qiskit.QuantumCircuit` or `cirq.Circuit`, so it can be handed to any transpiler
+or mitigation library.
+
+## Circuit cutting
+
+`QuantumCircuitCutter` slices a wide Qiskit circuit into consecutive segments
+remapped onto only the qubits they touch, and reports which qubits carry state
+across each cut.
+
+```python
+from quantum_forge import QuantumCircuitCutter
+
+cutter = QuantumCircuitCutter(max_subcircuit_depth=50)
+segments = cutter.cut_circuit(circuit)
+```
+
+`reconstruct_results` is a naive merge of per-segment counts, not a
+quasi-probability reconstruction. See `examples/circuit_cutting.py`.
+
+## Tests
 
 ```bash
-python advanced_examples.py
+pip install -e ".[dev]"
+pytest
 ```
 
-## Components
+The suite covers both backends, verifies that every operation produces the same
+state under Qiskit and Cirq, checks Gymnasium's `check_env`, and exercises
+hardware constraints, noise, seeding and the cutter.
 
-### Environment (QuantumForgeEnv)
-- Observations: Current quantum state as complex vector
-- Actions: (operation, qubit1, qubit2, parameter)
-  - Operations: X, Z, H, RY, CNOT, CZ, RXX, RZZ, etc.
-  - Qubits: Indices for operation application
-  - Parameters: Used for parameterized gates
+## Legacy code
 
-### Circuit Optimizer
-- Gate sequence optimization
-- Template matching
-- Quantum Shannon Decomposition
-- Resource estimation
-- Circuit equivalence checking
-
-### Circuit Cutter
-- Dependency analysis
-- Cut-point selection
-- Subcircuit generation
-- Result reconstruction
-- Performance analysis
-
-### Error Mitigator
-- Multiple mitigation strategies
-- Noise characterization
-- Error analysis
-- Result improvement tracking
-
-### Dynamic Compiler
-- Runtime optimization
-- Pulse-level control
-- Hardware adaptation
-- Performance analysis
-- Visualization tools
-
-## Backends
-
-QuantumForge supports two quantum computing backends:
-
-1. Qiskit: IBM's quantum computing framework
-   - Full noise simulation
-   - Hardware-specific optimization
-   - Pulse-level control
-
-2. Cirq: Google's quantum computing framework
-   - Noise modeling
-   - Device specification
-   - Custom gate sets
-
-## Visualization
-
-The framework generates various visualizations:
-- Reward plots
-- Quantum state visualizations
-- Circuit cut diagrams
-- Error mitigation results
-- Compilation analysis
-- Resource usage comparisons
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit pull requests.
+`legacy/` holds earlier, unfinished drafts of a circuit optimizer, dynamic
+compiler and error mitigator. They are not installed, not tested and do not
+run. See `legacy/README.md`.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT. See `LICENSE`.
 
 ## Citation
 
-If you use QuantumForge in your research, please cite:
-
 ```bibtex
 @software{quantumforge2024,
-  title = {QuantumForge: Advanced Quantum Circuit Design and Optimization Framework},
-  year = {2024},
+  title  = {QuantumForge: a Gymnasium environment for hardware-aware quantum circuit synthesis},
+  year   = {2024},
   author = {Moudather Chelbi},
-  url = {https://github.com/vinerya/QuantumForge}
+  url    = {https://github.com/vinerya/quantum_forge}
 }
+```
